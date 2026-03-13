@@ -19,7 +19,7 @@ class ExperienceReplayMemory:
             del self.memory[0]
 
     def shuffle_memory(self):
-        return np.random.permutation(self.memory)
+        random.shuffle(self.memory)
 
     def random_sample(self, batch_size):
         return random.sample(self.memory, batch_size)
