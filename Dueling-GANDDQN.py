@@ -7,9 +7,6 @@ import itertools
 import pandas as pd
 from cellular_env import cellularEnv
 
-import matplotlib
-import matplotlib.pyplot as plt
-
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -211,17 +208,6 @@ class WGAN_GP_Agent(object):
         
         if os.path.isfile(fname_D_model):
             self.D_model.load_state_dict(torch.load(fname_D_model))
-
-    def plot_loss(self):
-        plt.figure(2)
-        plt.clf()
-        plt.title('Training loss')
-        plt.xlabel('Episode')
-        plt.ylabel('Loss')
-        plt.plot(self.train_hist['G_loss'], 'r')
-        plt.plot(self.train_hist['D_loss'], 'b')
-        plt.legend(['G_loss', 'D_loss'])
-        plt.pause(0.001)
 
     def prep_minibatch(self):
         transitions= self.memory.random_sample(self.batch_size)
@@ -427,16 +413,6 @@ def get_action(model, s, z, eps, device):
     else:
         return np.random.randint(0, model.num_actions)
 
-def plot_rewards(rewards):
-    plt.figure(1)
-    plt.clf()
-    rewards = np.array(rewards)
-    plt.title('Training...')
-    plt.xlabel('Episode')
-    plt.ylabel('Duration')
-    plt.plot(rewards.cumsum())
-    plt.pause(0.001)
-
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = 'cuda'
 total_timesteps = 10000
@@ -461,7 +437,6 @@ learning_window = 2000
 #                                 initial_p=1.0,
 #                                 final_p=exploration_final_eps)
 
-plt.ion()
 
 env = cellularEnv(ser_cat=ser_cat_vec, learning_windows=learning_window, dl_mimo=dl_mimo)
 action_space = action_space(10, 3) * band_per
@@ -479,7 +454,7 @@ print(observation)
 
 log = {}
 rewards = []
-# utility = [0.]
+utilities = []
 observations = []
 actions = []
 SE = []
@@ -512,6 +487,7 @@ for t in range(1, total_timesteps + 1):
     QoE.append(qoe.tolist())
     SE.append(se[0])
     rewards.append(reward)
+    utilities.append(utility.item() if isinstance(utility, np.ndarray) else utility)
     # kpis.append(kpi)
 
     observation = state_update(env.tx_pkt_no, env.ser_cat)
@@ -526,22 +502,22 @@ for t in range(1, total_timesteps + 1):
     print('qoe', qoe)
     print('bandwidth-allocation solution', action_space[action])
 
-    # plot_rewards(rewards)
 
     if t % 200 == 0:
         print('frame index [%d], epsilon [%.4f]' % (t, epsilon))
         model.save_w()
-        log['state'] = observations
-        log['action'] = actions
-        log['SE'] = SE
-        log['QoE'] = QoE
-        log['reward'] = rewards
-
-        f = open('./log/Dueling_GANDDQN/log_10M_1M_LURLLC_10.txt', 'w')
-        f.write(json.dumps(log))
-        f.close()
+        
+        if not os.path.exists('./log/Dueling_GANDDQN'):
+            os.makedirs('./log/Dueling_GANDDQN')
+            
+        df = pd.DataFrame({
+            'Iteration': range(1, t + 1),
+            'System Utility': utilities,
+            'SE': SE,
+            'SSR_VoLTE': [q[0] for q in QoE],
+            'SSR_Video': [q[1] for q in QoE],
+            'SSR_URLLC': [q[2] for q in QoE]
+        })
+        df.to_csv('./log/Dueling_GANDDQN/metrics.csv', index=False)
     
 print('Complete')
-plt.ioff()
-plt.show() 
-

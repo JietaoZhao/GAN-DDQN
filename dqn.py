@@ -161,3 +161,133 @@ class DQN:
         # self.epsilon = self.epsilon + self.epsilon_increment if self.epsilon < self.epsilon_max else self.epsilon_max
         self.epsilon = max(0, self.epsilon_max - math.exp(-1 * self.learn_step_counter / self.epsilon_decay))
         self.learn_step_counter += 1
+
+import pandas as pd
+import os
+import json
+import itertools
+from cellular_env import cellularEnv
+
+def action_space(total, num):
+    tmp = list(itertools.product(range(total + 1), repeat=num))
+    result = []
+    for value in tmp:
+        if sum(value) == total:
+            result.append(list(value))
+    result = np.array(result)
+    [i, j] = np.where(result == 0)
+    result = np.delete(result, i, axis=0)
+    return result
+
+def state_update(state, ser_cat):
+    discrete_state = np.zeros(state.shape)
+    if state.all() == 0:
+        return discrete_state
+    for ser_name in ser_cat:
+        ser_index = ser_cat.index(ser_name)
+        discrete_state[ser_index] = state[ser_index]
+    discrete_state = (discrete_state-discrete_state.mean())/discrete_state.std()
+    return discrete_state
+
+def calc_reward(qoe, se, threshold):
+    utility = np.matmul(qoe_weight, qoe.reshape((3, 1))) + se_weight * se
+    if threshold > 11:
+        threshold = 11
+    if utility < threshold:
+        reward = 0
+    else:
+        reward = 1
+    return utility, reward
+
+if __name__ == '__main__':
+    total_timesteps = 10000
+
+    # parameters of celluar environment
+    ser_cat_vec = ['volte', 'embb_general', 'urllc']
+    band_whole_no = 10 * 10**6
+    band_per = 1 * 10**6
+    qoe_weight = [1, 4, 6]
+    se_weight = 0.01
+    dl_mimo = 64
+    learning_window = 2000
+
+    env = cellularEnv(ser_cat=ser_cat_vec, learning_windows=learning_window, dl_mimo=dl_mimo)
+    action_sp = action_space(10, 3) * band_per
+    num_actions = len(action_sp)
+    print(num_actions)
+
+    sess = tf.Session()
+    model = DQN(
+        sess=sess,
+        n_actions=num_actions,
+        n_features=3,
+        learning_rate=0.001,
+        reward_decay=0.8,
+        epsilon_max=1.0,
+        epsilon_decay=3000,
+        replace_target_iter=1,
+        memory_size=50000,
+        batch_size=32,
+    )
+    
+    env.countReset()
+    env.activity()
+    observation = state_update(env.tx_pkt_no, env.ser_cat)
+
+    log = {}
+    rewards = []
+    utilities = []
+    observations = []
+    actions = []
+    SE = []
+    QoE = []
+
+    for t in range(1, total_timesteps + 1):
+        observations.append(observation.tolist())
+        action = model.choose_action(observation)
+        actions.append(action)
+        env.band_ser_cat = action_sp[action]
+        prev_observation = observation
+
+        for i in itertools.count():
+            env.scheduling()
+            env.provisioning()
+            if i == (learning_window - 1):
+                break
+            else:
+                env.bufferClear()
+                env.activity()
+        
+        qoe, se = env.get_reward()
+        threshold = 6 + 4 * t / (total_timesteps/1.5)
+        utility, reward = calc_reward(qoe, se, threshold)
+        QoE.append(qoe.tolist())
+        SE.append(se[0])
+        rewards.append(reward)
+        utilities.append(utility.item() if isinstance(utility, np.ndarray) else utility)
+
+        observation = state_update(env.tx_pkt_no, env.ser_cat)
+
+        model.store_transition(prev_observation, action, reward, observation)
+        if t > 200 and t % 1 == 0:
+            model.learn()
+
+        env.countReset()
+        env.activity()
+        print('DQN=====episode: %d, epsilon: %.3f, utility: %.5f, reward: %.5f' % (t, model.epsilon, utility, reward))
+
+        if t % 200 == 0:
+            if not os.path.exists('./log/DQN'):
+                os.makedirs('./log/DQN')
+                
+            df = pd.DataFrame({
+                'Iteration': range(1, t + 1),
+                'System Utility': utilities,
+                'SE': SE,
+                'SSR_VoLTE': [q[0] for q in QoE],
+                'SSR_Video': [q[1] for q in QoE],
+                'SSR_URLLC': [q[2] for q in QoE]
+            })
+            df.to_csv('./log/DQN/metrics.csv', index=False)
+        
+    print('Complete')
